@@ -39,8 +39,10 @@ tail -f logs/*.log
 Componentes individuais:
 
 ```bash
-.venv/bin/python -m gateway.main --rediscovery 10
+.venv/bin/python -m gateway.main --rediscovery 10 --db data/gateway.db
 .venv/bin/python -m sources.base --id probe-1 --type PROBE --interval 5    # fonte de teste (só descoberta)
+.venv/bin/python -m sources.simulated --id temp-1 --type SENSOR_TEMP --metric temperatura --unit °C \
+    --base 25 --min -10 --max 50 --interval 5                              # fonte de teste com envio periódico
 ```
 
 Testes: `.venv/bin/python -m pytest`
@@ -72,6 +74,46 @@ O registro do Gateway (`gateway/registry.py`) mantém cada fonte em um de três 
 | `DESLIGADA` | a fonte reportou `powered_on = false`; não expira por silêncio |
 
 Uma fonte `OFFLINE` volta a `ONLINE` assim que manda uma leitura ou responde à redescoberta.
+
+## Fluxo de dados (UDP)
+
+```
+fonte: sample() ──PeriodicPublisher──▶ UdpSender ──SourceMessage{reading}──▶ Gateway :6000
+Gateway: GatewayUdpEndpoint ──▶ ReadingReceiver ──▶ registry.touch()   (estado ONLINE, última leitura)
+                                               ├──▶ ReadingStore       (memória, 25 h, consultas)
+                                               ├──▶ SqliteStorage      (disco, histórico)
+                                               └──▶ is_event → ALARME no log + contagem por fonte
+```
+
+- **Fonte** (`sources/udp_sender.py`): `PeriodicPublisher` chama a função de amostragem a cada intervalo e envia pelo `UdpSender`. Nada sai antes da descoberta. `set_interval()` vale já para o próximo envio, `pause()`/`resume()` atendem o `SetPower` e `UdpSender.send(leitura, is_event=True)` faz o envio imediato por limiar (requisito 5c).
+- **Valores simulados** (`sources/generator.py`): `ValueGenerator` = base + tendência + deriva lenta + ruído, limitado à faixa física. `spike()` força um pico (útil para disparar o limiar na demo).
+- **Gateway** (`gateway/readings.py`): as janelas de tempo usam o relógio do Gateway na chegada (`received_ms`), então fontes com relógio errado não bagunçam as consultas. Leitura de fonte desconhecida é guardada e antecipa a redescoberta.
+
+## Consultas agregadas (requisito 5d)
+
+`gateway/queries.py` — genéricas por grandeza (`metric`), servem para qualquer domínio. Cada resultado traz o valor, a fonte associada, o ranking por fonte e uma frase pronta (`description`) para o Cliente exibir.
+
+| Tipo | Resultado | Exemplo |
+|---|---|---|
+| `media` | média na janela | média de temperatura na última hora |
+| `desvio_padrao` | desvio padrão amostral | desvio padrão de CO2 nas últimas 24 h |
+| `minimo` / `maximo` | menor/maior leitura e a fonte | pico de consumo nas últimas 24 h |
+| `soma` | soma das leituras | consumo de água em 24 h |
+| `menor_media` / `maior_media` | fonte com menor/maior média | talhão mais seco, rack mais quente |
+| `maior_variacao` | fonte com maior desvio padrão | fonte com maior variação nas leituras |
+| `contagem_eventos` | alarmes (`is_event`) por fonte | leito com mais alarmes na última hora |
+
+Filtros: `QueryFilter(metric, source_id, source_type)` + janela em segundos (até 30 dias). Janela vazia devolve `value = None` e "sem dados", sem erro. Janelas maiores que a retenção em memória são calculadas sobre o SQLite.
+
+## Persistência (extra)
+
+`gateway/storage.py` grava cada leitura em SQLite (`data/gateway.db`, `--db ""` desliga). As escritas vão para uma fila e uma thread grava em lote, então o receptor UDP nunca espera o disco. Ao reiniciar, o Gateway recarrega as últimas 25 h para a memória e as consultas continuam funcionando.
+
+| Tabela | Conteúdo |
+|---|---|
+| `readings` | `source_id`, `source_type`, `received_ms`, `source_timestamp_ms`, `is_event` |
+| `measurements` | `reading_id`, `metric`, `value`, `unit` (uma linha por grandeza) |
+| `source_events` | comandos e mudanças de estado: `timestamp_ms`, `source_id`, `kind`, `detail` |
 
 ## Contrato das fontes — `proto/sources.proto`
 
@@ -105,7 +147,13 @@ sources/base.py           SourceProcess (classe base das fontes)        Marcelo
 gateway/discovery.py      DiscoveryRequest + registro dos anúncios      Marcelo
 gateway/registry.py       registro de fontes + detecção de falhas       Marcelo
 gateway/udp_endpoint.py   socket UDP do Gateway, despacho pelo oneof    Marcelo
+gateway/readings.py       receptor de leituras + séries em memória      Enzo
+gateway/queries.py        consultas agregadas                           Enzo
+gateway/storage.py        persistência SQLite + histórico               Enzo
 gateway/main.py           liga todos os módulos                         Marcelo
+sources/udp_sender.py     UdpSender + PeriodicPublisher                 Enzo
+sources/generator.py      gerador de valores simulados                  Enzo
+sources/simulated.py      fonte contínua genérica (testes/demo)         Enzo
 scripts/                  gen_proto.sh, run_all.sh, stop_all.sh         Marcelo
 tests/                    pytest
 ```
@@ -114,8 +162,10 @@ Pontos de encaixe para os outros fluxos:
 
 | Para | Use |
 |---|---|
-| Fontes (Jon, Enzo) | estender `sources.base.SourceProcess`; sobrescrever `current_status()`; enviar leituras só quando `gateway_address()` não for `None`; reaproveitar `self.udp_sock` |
-| Receptor UDP (Enzo, #12) | callback `on_reading(reading, sender)` do `GatewayUdpEndpoint` — substitui o `RegistryReadingSink` em `gateway/main.py`, chamando `registry.touch()` |
+| Fontes (Jon) | estender `sources.base.SourceProcess`; sobrescrever `current_status()`; enviar com `UdpSender(self.gateway_address, self.udp_sock)` + `PeriodicPublisher` (exemplo completo em `sources/simulated.py`); gRPC `SetSendInterval` → `publisher.set_interval()`, `SetPower` → `pause()`/`resume()`, evento → `sender.send(leitura, is_event=True)` |
+| Consultas (LG, #15) | `gateway.queries.run(tipo, QueryFilter(...), janela_s)` → `QueryResult` (`value`, `source_id`, `per_source`, `description`); erro de parâmetro = `QueryError` |
+| Histórico (LG, #15) | `gateway.storage.history(source_id, inicio_ms, fim_ms, metric=None, limit=None)` → leituras em ordem cronológica (`None` se rodando com `--db ""`) |
+| Comandos/estado (Jon #13, Marcelo #11) | `gateway.storage.record_event(source_id, "comando", "SetPower(off)")` — opcional, aparece no histórico |
 | Comandos gRPC (Jon, #13) | `registry.update_status()` / `registry.mark_offline()`; `on_controllable_discovered(source_id)` do `AnnouncementHandler` para o `GetStatus` inicial |
 | Servidor TCP (LG, #15) | `registry.list()` / `registry.get()` — devolvem cópias, seguras para ler fora do lock |
 
@@ -124,6 +174,6 @@ Pontos de encaixe para os outros fluxos:
 | Pessoa | Responsabilidade |
 |---|---|
 | Marcelo | contratos, descoberta, registro, infraestrutura |
-| Enzo | fluxo de dados (UDP), consultas, persistência |
+| Enzo | fluxo de dados (UDP), consultas, persistência, slides |
 | Jon | fontes e controle (gRPC) |
 | LG | Cliente e protocolo TCP (Node.js) |

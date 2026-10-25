@@ -28,5 +28,10 @@ start gateway gateway.main --advertise-ip "$DISTSYS_MCAST_IF"
 start probe-1 sources.base --id probe-1 --type PROBE --interval 5
 start probe-2 sources.base --id probe-2 --type PROBE --interval 5
 start probe-ctrl sources.base --id probe-ctrl --type PROBE_CTRL --grpc-port 50051
+# Fontes simuladas com envio periódico (fluxo de dados, #26) — alimentam as consultas e o histórico:
+start sim-umidade-1 sources.simulated --id sim-umidade-1 --type SENSOR_SIMULADO --metric umidade --unit % \
+  --base 25 --noise 0.3 --drift 0.2 --min 0 --max 100 --interval 5
+start sim-umidade-2 sources.simulated --id sim-umidade-2 --type SENSOR_SIMULADO --metric umidade --unit % \
+  --base 40 --noise 1.0 --drift 0.5 --min 0 --max 100 --interval 5
 
 echo "Acompanhe com: tail -f logs/*.log   |   Pare com: ./scripts/stop_all.sh"

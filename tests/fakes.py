@@ -25,3 +25,10 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+class FailingDatagramSocket:
+    """sendto sempre falha, como um socket sem rota para o Gateway."""
+
+    def sendto(self, data: bytes, address: Address, /) -> int:
+        raise OSError("Network is unreachable")

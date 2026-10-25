@@ -1,10 +1,10 @@
 """Ponto de entrada do Gateway (#27): liga descoberta, registro, UDP e detecção de falhas.
 
-    python -m gateway.main [--udp-port 6000] [--rediscovery 10] [--advertise-ip 192.168.0.5]
+    python -m gateway.main [--udp-port 6000] [--rediscovery 10] [--advertise-ip 192.168.0.5] [--db data/gateway.db]
 
 Pontos de encaixe dos outros fluxos (injetados aqui, sem import global nos módulos):
-    - receptor/armazenamento de leituras (Enzo, #12) → substitui RegistryReadingSink em on_reading
-    - consultas (Enzo, #14) e persistência (Enzo, #16)
+    - receptor/armazenamento de leituras (Enzo, #12) → ReadingReceiver em on_reading (usa o RegistryReadingSink)
+    - consultas (Enzo, #14) → gateway.queries; persistência (Enzo, #16) → gateway.storage
     - cliente gRPC de comandos (Jon, #13) → on_controllable_discovered do AnnouncementHandler
     - servidor TCP do Cliente (LG, #15)
 """
@@ -25,15 +25,19 @@ from common.net import (
     open_udp_socket,
     resolve_local_ip,
 )
-from common.runtime import configure_logging, wait_for_shutdown_signal
+from common.runtime import configure_logging, epoch_ms, wait_for_shutdown_signal
 from gateway.discovery import AnnouncementHandler, DiscoveryBroadcaster
+from gateway.queries import QueryEngine
+from gateway.readings import DEFAULT_RETENTION_S, ReadingReceiver, ReadingStore
 from gateway.registry import SourceRegistry
+from gateway.storage import SqliteStorage
 from gateway.udp_endpoint import GatewayUdpEndpoint
 from pb import sources_pb2
 
 log = logging.getLogger(__name__)
 
 FAILURE_CHECK_INTERVAL_S = 1.0
+DEFAULT_DB_PATH = "data/gateway.db"
 
 
 class RegistryReadingSink:
@@ -68,19 +72,32 @@ class Gateway:
         advertise: Address,
         rediscovery_s: float,
         registry: SourceRegistry | None = None,
+        store: ReadingStore | None = None,
+        storage: SqliteStorage | None = None,
     ) -> None:
         self.sock = sock
         self.registry = registry or SourceRegistry()
+        self.store = store if store is not None else ReadingStore()  # store vazio é falsy (__len__)
+        self.storage = storage
         self.broadcaster = DiscoveryBroadcaster(sock, group, advertise)
         self.rediscovery = PeriodicTask("rediscovery", rediscovery_s, self.broadcaster.send_request)
         self.failure_monitor = PeriodicTask("failure-monitor", FAILURE_CHECK_INTERVAL_S, self.registry.sweep)
+        self.receiver = ReadingReceiver(
+            self.store, RegistryReadingSink(self.registry, self.rediscovery.trigger), storage
+        )
+        self.queries = QueryEngine(self.store, history=storage)
         self.udp = GatewayUdpEndpoint(
             sock,
             on_announcement=AnnouncementHandler(self.registry),
-            on_reading=RegistryReadingSink(self.registry, self.rediscovery.trigger),
+            on_reading=self.receiver,
         )
 
     def start(self) -> None:
+        if self.storage is not None:
+            self.storage.start()
+            since_ms = epoch_ms() - int(self.store.retention_s * 1000)
+            loaded = self.store.load(self.storage.readings(since_ms=since_ms))
+            log.info("Histórico recarregado: %d leituras das últimas %.0f h", loaded, self.store.retention_s / 3600)
         # UDP primeiro: os anúncios podem chegar logo após o primeiro DiscoveryRequest.
         self.udp.start()
         self.failure_monitor.start()
@@ -90,6 +107,8 @@ class Gateway:
         self.rediscovery.stop()
         self.failure_monitor.stop()
         self.udp.stop()
+        if self.storage is not None:
+            self.storage.stop()
         self.sock.close()
 
 
@@ -102,18 +121,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mcast-ttl", type=int, default=1, help="TTL multicast (1 = só rede local)")
     parser.add_argument("--advertise-ip", help="IP que as fontes usam para falar com o Gateway (padrão: autodetectar)")
     parser.add_argument("--rediscovery", type=float, default=10.0, help="intervalo de redescoberta em segundos")
+    parser.add_argument("--db", default=os.environ.get("DISTSYS_DB", DEFAULT_DB_PATH),
+                        help=f"arquivo SQLite do histórico (padrão: {DEFAULT_DB_PATH}; vazio = sem persistência)")
+    parser.add_argument("--retention-h", type=float, default=DEFAULT_RETENTION_S / 3600,
+                        help="horas de leituras mantidas em memória para as consultas")
     return parser
 
 
 def build_gateway(args: argparse.Namespace) -> Gateway:
     if args.rediscovery <= 0:
         raise ValueError(f"--rediscovery deve ser > 0 segundos, recebido {args.rediscovery!r}")
+    if args.retention_h <= 0:
+        raise ValueError(f"--retention-h deve ser > 0 horas, recebido {args.retention_h!r}")
     sock = open_udp_socket(args.udp_port)
     configure_multicast_sender(sock, args.mcast_ttl, args.mcast_if)
     advertise_ip = args.advertise_ip or args.mcast_if or resolve_local_ip(args.mcast_group)
     advertise = (advertise_ip, sock.getsockname()[1])
     log.info("Gateway em %s:%d (UDP), descoberta em %s:%d", *advertise, args.mcast_group, args.mcast_port)
-    return Gateway(sock, (args.mcast_group, args.mcast_port), advertise, args.rediscovery)
+    store = ReadingStore(retention_s=args.retention_h * 3600)
+    storage = SqliteStorage(args.db) if args.db else None
+    return Gateway(sock, (args.mcast_group, args.mcast_port), advertise, args.rediscovery, store=store, storage=storage)
 
 
 def main() -> None:
