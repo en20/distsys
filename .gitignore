@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+node_modules/
+pb/
+*_pb2.py
+*_pb2.pyi
+*_pb2_grpc.py
+*.db
+logs/
