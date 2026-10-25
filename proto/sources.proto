@@ -1,0 +1,141 @@
+// Contrato entre o Gateway e as Fontes de Dados.
+//
+// Domínio: Agricultura de precisão.
+//
+//   Descoberta ...... Gateway --(UDP multicast)--> Fontes   : DiscoveryRequest
+//                     Fontes  --(UDP unicast)----> Gateway  : SourceMessage{announcement}
+//   Fluxo de dados .. Fontes  --(UDP unicast)----> Gateway  : SourceMessage{reading}
+//   Comandos ........ Gateway --(gRPC)-----------> Fontes controláveis : SourceControl
+//
+// Para gerar o código Python: python scripts/gen_proto.py
+
+syntax = "proto3";
+
+package smartenv.sources;
+
+// ---------------------------------------------------------------------------
+// Identificação das fontes
+// ---------------------------------------------------------------------------
+
+enum SourceType {
+  SOURCE_TYPE_UNSPECIFIED = 0;
+  IRRIGATION_VALVE = 1;  // Válvula de irrigação (controlável, atuador)
+  RESERVOIR_LEVEL = 2;   // Sensor de nível do reservatório (controlável, limiar + evento imediato)
+  SOIL_MOISTURE = 3;     // Sensor de umidade do solo (contínuo)
+  WEATHER_STATION = 4;   // Estação meteorológica (contínuo)
+}
+
+// Dados fixos de uma fonte (não mudam enquanto o processo roda).
+message SourceInfo {
+  string source_id = 1;     // único no sistema, ex.: "valvula-1"
+  SourceType type = 2;
+  string location = 3;      // talhão/local, ex.: "talhao-1", "reservatorio"
+  bool controllable = 4;    // true => expõe o serviço gRPC SourceControl
+}
+
+enum FailureMode {
+  FAILURE_NONE = 0;          // operação normal (também usado para encerrar uma falha)
+  FAILURE_SILENT = 1;        // para de enviar qualquer coisa por UDP (leituras e anúncios)
+  FAILURE_OUT_OF_RANGE = 2;  // envia leituras fora da faixa física do sensor
+  FAILURE_CRASH = 3;         // o processo da fonte encerra logo após responder
+}
+
+// Estado operacional de uma fonte. Também é a resposta de todos os RPCs.
+message SourceStatus {
+  SourceInfo info = 1;
+  bool powered_on = 2;              // ligada/aberta (false = desligada/fechada)
+  double send_interval_s = 3;       // intervalo do envio periódico
+  optional double threshold = 4;    // limiar de alerta (só fontes com limiar)
+  map<string, double> parameters = 5;  // parâmetros ajustáveis, ex.: {"vazao_alvo_lpm": 12}
+  FailureMode failure_mode = 6;
+  int64 failure_until_ms = 7;       // fim da falha simulada (epoch ms), 0 = até ser limpa
+}
+
+// ---------------------------------------------------------------------------
+// Descoberta (requisitos 2b e 4)
+// ---------------------------------------------------------------------------
+
+// Enviado pelo Gateway ao grupo multicast quando inicia (e periodicamente).
+message DiscoveryRequest {
+  string gateway_ip = 1;         // vazio => a fonte usa o IP de origem do pacote
+  uint32 gateway_udp_port = 2;   // porta UDP onde o Gateway recebe anúncios e leituras
+  uint64 request_id = 3;
+  int64 timestamp_ms = 4;
+}
+
+// Resposta da fonte ao DiscoveryRequest, enviada por UDP unicast ao Gateway.
+message SourceAnnouncement {
+  SourceInfo info = 1;                // tipo da fonte (2b.i)
+  string ip = 2;                      // IP da fonte (2b.ii)
+  uint32 grpc_port = 3;               // porta do serviço gRPC; 0 se não controlável (2b.ii)
+  SourceStatus initial_state = 4;     // estado atual da fonte (2b.iii)
+  repeated string measurements = 5;   // grandezas que a fonte envia, ex.: ["umidade_solo"]
+  uint64 request_id = 6;              // eco do DiscoveryRequest respondido
+}
+
+// ---------------------------------------------------------------------------
+// Fluxo de dados (UDP)
+// ---------------------------------------------------------------------------
+
+message Measurement {
+  string name = 1;   // ex.: "umidade_solo", "vazao", "temperatura"
+  double value = 2;
+  string unit = 3;   // ex.: "%", "L/min", "°C"
+}
+
+message SensorReading {
+  SourceInfo info = 1;
+  uint64 seq = 2;                         // contador por fonte (detecta perdas no UDP)
+  int64 timestamp_ms = 3;                 // epoch ms
+  repeated Measurement measurements = 4;  // vazio quando a fonte está desligada
+  bool powered_on = 5;                    // false => leitura serve só como heartbeat
+  bool is_event = 6;                      // true => envio imediato por evento (requisito 5c)
+  string event_message = 7;               // descrição do evento, ex.: "nível abaixo do limiar"
+}
+
+// Tudo o que uma fonte envia ao Gateway pela porta UDP dele.
+message SourceMessage {
+  oneof payload {
+    SourceAnnouncement announcement = 1;
+    SensorReading reading = 2;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Comandos (gRPC) — fontes controláveis
+// ---------------------------------------------------------------------------
+
+message StatusRequest {}
+
+message PowerRequest {
+  bool on = 1;
+}
+
+message IntervalRequest {
+  double send_interval_s = 1;  // 0.5 a 3600
+}
+
+message ThresholdRequest {
+  double threshold = 1;
+}
+
+message ParameterRequest {
+  string name = 1;   // ex.: "vazao_alvo_lpm"
+  double value = 2;
+}
+
+message FailureRequest {
+  FailureMode mode = 1;
+  uint32 duration_s = 2;  // 0 = até ser limpa com FAILURE_NONE
+}
+
+// Erros: INVALID_ARGUMENT (valor fora da faixa / parâmetro desconhecido),
+//        UNIMPLEMENTED (comando não suportado por este tipo de fonte).
+service SourceControl {
+  rpc GetStatus(StatusRequest) returns (SourceStatus);
+  rpc SetPower(PowerRequest) returns (SourceStatus);
+  rpc SetSendInterval(IntervalRequest) returns (SourceStatus);
+  rpc SetThreshold(ThresholdRequest) returns (SourceStatus);
+  rpc SetParameter(ParameterRequest) returns (SourceStatus);
+  rpc SimulateFailure(FailureRequest) returns (SourceStatus);
+}
