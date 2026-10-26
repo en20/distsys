@@ -2,7 +2,7 @@
 
 Sistema distribuído de monitoramento e controle (Distribuição de Processos e Dados — Prof. Paulo A. L. Rego). Especificação em [`docs/especificacao-trabalho-1.pdf`](docs/especificacao-trabalho-1.pdf); acompanhamento na issue #1.
 
-> **Domínio de aplicação:** _a definir no kickoff (#2)._ O contrato das fontes usa o tipo como string justamente para não depender dessa escolha.
+> **Domínio de aplicação:** agricultura de precisão (fontes do Enzo; falta registrar no kickoff, #2). O contrato das fontes usa o tipo como string, então não depende dessa escolha.
 
 ## Arquitetura
 
@@ -40,6 +40,10 @@ Componentes individuais:
 
 ```bash
 .venv/bin/python -m gateway.main --rediscovery 10 --db data/gateway.db
+.venv/bin/python -m sources.valve --id valvula-1 --grpc-port 50051 --interval 5          # controlável
+.venv/bin/python -m sources.reservoir --id reservatorio-1 --grpc-port 50052 --interval 5   # controlável + evento
+.venv/bin/python -m sources.soil_moisture --id umidade-1 --interval 15                     # contínua
+.venv/bin/python -m sources.weather_station --id estacao-1 --interval 15                   # contínua, 4 grandezas
 .venv/bin/python -m sources.base --id probe-1 --type PROBE --interval 5    # fonte de teste (só descoberta)
 .venv/bin/python -m sources.simulated --id temp-1 --type SENSOR_TEMP --metric temperatura --unit °C \
     --base 25 --min -10 --max 50 --interval 5                              # fonte de teste com envio periódico
@@ -116,6 +120,39 @@ Filtros: `QueryFilter(metric, source_id, source_type)` + janela em segundos (at�
 | `measurements` | `reading_id`, `metric`, `value`, `unit` (uma linha por grandeza) |
 | `source_events` | comandos e mudanças de estado: `timestamp_ms`, `source_id`, `kind`, `detail` |
 
+## Fontes do domínio — agricultura de precisão
+
+Implementação do Enzo (branch `enzo/fontes-de-dados`) adaptada ao contrato acima: cada fonte estende `sources.datasource.DataSource`, que por sua vez estende o `SourceProcess` (descoberta) e envia pelo `UdpSender`.
+
+| Fonte | Módulo | Tipo | Controlável | Grandezas | Comandos |
+|---|---|---|---|---|---|
+| Válvula de irrigação | `sources.valve` | `IRRIGATION_VALVE` | sim (`50051`, `50053`) | `vazao` (L/min), `volume` (L desde a leitura anterior) | ligar/desligar (abrir/fechar), intervalo, `vazao_alvo_lpm` (0–100), falha |
+| Nível do reservatório | `sources.reservoir` | `RESERVOIR_LEVEL` | sim (`50052`) | `nivel` (%) | ligar/desligar, **limiar** (0–100 %), intervalo, falha |
+| Umidade do solo | `sources.soil_moisture` | `SOIL_MOISTURE` | não | `umidade_solo` (%) | — |
+| Estação meteorológica | `sources.weather_station` | `WEATHER_STATION` | não | `temperatura` (°C), `umidade_ar` (%), `chuva` (mm/h), `vento` (km/h) | — |
+
+- **Evento imediato (requisito 5c):** o reservatório simula o nível a cada 1 s (consumo da irrigação + bomba que liga abaixo de 20 % e desliga acima de 85 %). Quando o nível **cai abaixo do limiar**, envia na hora uma leitura com `is_event = true`; quando volta acima de limiar + 1 %, envia outro evento ("nível normalizado"). Os dois aparecem como ALARME no Gateway.
+- **Consumo de água:** `volume` é o que a válvula liberou desde a leitura anterior; a consulta `soma` sobre `volume` dá o consumo.
+- **Umidade do solo:** cada `--id` tem média e variabilidade próprias, estáveis entre execuções.
+- **Desligada** não envia leituras; o registro mostra `DESLIGADA` (estado vindo do gRPC), que não expira.
+- **Comandos inválidos:** intervalo fora de 0,5–3600 s ou parâmetro/limiar fora da faixa → `INVALID_ARGUMENT`; limiar/parâmetro em fonte que não tem → `UNIMPLEMENTED`.
+
+### Simulação de falhas (#8) — roteiro da demo
+
+Com tudo no ar (`./scripts/run_all.sh`; acompanhe `logs/gateway.log`):
+
+| Passo | Comando | O que aparece no Gateway |
+|---|---|---|
+| 1. Evento imediato | `./scripts/simulate_failure.sh event` | `ALARME de reservatorio-1` |
+| 2. Fonte silenciosa | `./scripts/simulate_failure.sh silent 30` | `valvula-1: ONLINE → OFFLINE` após 3 × intervalo; volta a `ONLINE` sozinha no fim |
+| 3. Queda de uma fonte contínua | `./scripts/simulate_failure.sh kill umidade-2` | `umidade-2: ONLINE → OFFLINE`; as outras seguem normais |
+| 4. Valores absurdos | `./scripts/simulate_failure.sh garbage 30` | leituras da válvula fora da faixa (ex.: `vazao=150L/min`) |
+| 5. Queda do processo | `./scripts/simulate_failure.sh crash` | `valvula-1: ONLINE → OFFLINE` |
+| 6. Recuperação | `./scripts/simulate_failure.sh restart` | `valvula-1: OFFLINE → ONLINE` na próxima redescoberta |
+| 7. Limpar | `./scripts/simulate_failure.sh recover` | limiar volta a 30 % (gera o evento "nível normalizado") |
+
+O script fala direto com o gRPC das fontes (`python -m gateway.commands`); com o Cliente (#17) pronto, os mesmos comandos passam pelo Gateway. A fonte em falha `silent` também ignora a redescoberta (`SourceProcess.answers_discovery()`), senão o Gateway nunca a marcaria OFFLINE.
+
 ## Comandos para as fontes controláveis (gRPC) — `gateway/commands.py`
 
 `CommandService.execute(source_id, Command.xxx(...))` procura a fonte no registro, chama a RPC com deadline de 2 s e devolve o `SourceStatus` novo, que também vai para `registry.update_status`. Os erros chegam como `CommandError(kind, message)`, com a mensagem pronta para o Cliente:
@@ -173,8 +210,13 @@ gateway/main.py           liga todos os módulos                         Marcelo
 sources/udp_sender.py     UdpSender + PeriodicPublisher                 Enzo
 sources/generator.py      gerador de valores simulados                  Enzo
 sources/simulated.py      fonte contínua genérica (testes/demo)         Enzo
+sources/datasource.py     base das fontes do domínio (DataSource)       Enzo (adaptado por Jon)
+sources/control.py        servidor gRPC SourceControl                   Enzo (adaptado por Jon)
+sources/cli.py            linha de comando das fontes                   Enzo (adaptado por Jon)
+sources/valve.py, reservoir.py, soil_moisture.py, weather_station.py   Enzo
 gateway/commands.py       cliente gRPC + handler de comandos             Jon
 scripts/                  gen_proto.sh, run_all.sh, stop_all.sh         Marcelo
+                          simulate_failure.sh                           Jon
 tests/                    pytest
 ```
 
@@ -182,7 +224,7 @@ Pontos de encaixe para os outros fluxos:
 
 | Para | Use |
 |---|---|
-| Fontes (Jon) | estender `sources.base.SourceProcess`; sobrescrever `current_status()`; enviar com `UdpSender(self.gateway_address, self.udp_sock)` + `PeriodicPublisher` (exemplo completo em `sources/simulated.py`); gRPC `SetSendInterval` → `publisher.set_interval()`, `SetPower` → `pause()`/`resume()`, evento → `sender.send(leitura, is_event=True)` |
+| Novas fontes do domínio | estender `sources.datasource.DataSource` (definir `TYPE`, `MEASUREMENTS`, `PARAMETERS`/`THRESHOLD` e os hooks `update`/`measure`/`check_event`); fonte genérica de teste: `sources.base.SourceProcess` + `UdpSender`/`PeriodicPublisher` (exemplo em `sources/simulated.py`) |
 | Consultas (LG, #15) | `gateway.queries.run(tipo, QueryFilter(...), janela_s)` → `QueryResult` (`value`, `source_id`, `per_source`, `description`); erro de parâmetro = `QueryError` |
 | Histórico (LG, #15) | `gateway.storage.history(source_id, inicio_ms, fim_ms, metric=None, limit=None)` → leituras em ordem cronológica (`None` se rodando com `--db ""`) |
 | Comandos/estado (Jon #13, Marcelo #11) | `gateway.storage.record_event(source_id, "comando", "SetPower(off)")` — opcional, aparece no histórico |
