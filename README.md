@@ -40,14 +40,10 @@ Componentes individuais:
 
 ```bash
 .venv/bin/python -m gateway.main --rediscovery 10 --db data/gateway.db
-.venv/bin/python -m sources.valve --id valvula-1 --grpc-port 50051 --interval 5         # controlável (#5)
-.venv/bin/python -m sources.greenhouse --id estufa-1 --grpc-port 50052 --threshold 30     # controlável + evento (#6)
-.venv/bin/python -m sources.soil_moisture --id umidade-talhao-1 --interval 15             # contínua (#7)
-.venv/bin/python -m sources.weather_station --id estacao-1 --interval 15                  # contínua, 3 grandezas (#7)
-.venv/bin/python -m gateway.commands 127.0.0.1:50051 status                               # comando gRPC direto na fonte
 .venv/bin/python -m sources.base --id probe-1 --type PROBE --interval 5    # fonte de teste (só descoberta)
 .venv/bin/python -m sources.simulated --id temp-1 --type SENSOR_TEMP --metric temperatura --unit °C \
     --base 25 --min -10 --max 50 --interval 5                              # fonte de teste com envio periódico
+.venv/bin/python -m gateway.commands 127.0.0.1:50051 status                 # comando gRPC direto numa fonte controlável
 ```
 
 Testes: `.venv/bin/python -m pytest`
@@ -120,50 +116,23 @@ Filtros: `QueryFilter(metric, source_id, source_type)` + janela em segundos (at�
 | `measurements` | `reading_id`, `metric`, `value`, `unit` (uma linha por grandeza) |
 | `source_events` | comandos e mudanças de estado: `timestamp_ms`, `source_id`, `kind`, `detail` |
 
-## Fontes e controle (gRPC)
+## Comandos para as fontes controláveis (gRPC) — `gateway/commands.py`
 
-Domínio usado pelas fontes: **agricultura de precisão** (o mesmo dos exemplos das issues; o tipo é configurável por `--type`).
-
-| Fonte | Módulo | Tipo | Controlável | Grandezas | Comandos |
-|---|---|---|---|---|---|
-| Válvula de irrigação | `sources.valve` | `VALVULA_IRRIGACAO` | sim (gRPC `50051`) | `vazao` (L/min), `volume` (L desde a leitura anterior) | ligar/desligar, intervalo, `vazao_alvo` (0–100 L/min), falha |
-| Temperatura da estufa | `sources.greenhouse` | `SENSOR_TEMPERATURA_ESTUFA` | sim (gRPC `50052`) | `temperatura_estufa` (°C) | ligar/desligar, intervalo, **limiar**, `ventilacao` (0–100 %), falha |
-| Umidade do solo | `sources.soil_moisture` | `SENSOR_UMIDADE_SOLO` | não | `umidade_solo` (%) | — |
-| Estação meteorológica | `sources.weather_station` | `ESTACAO_METEOROLOGICA` | não | `temperatura` (°C), `umidade_ar` (%), `vento` (km/h) | — |
-
-- **Desligar** (`SetPower off`) pausa o envio; o registro mostra a fonte como `DESLIGADA` (não expira). Ligar envia uma leitura na hora.
-- **Evento imediato (requisito 5c):** a estufa amostra a temperatura a cada 1 s e envia a cada `--interval`. Quando a temperatura passa de abaixo para acima do limiar, envia na hora uma leitura com `is_event = true`. O alarme só volta a disparar depois que a temperatura cai 0,5 °C abaixo do limiar. Para forçar na demo: baixar o limiar (`threshold 20`), fechar a ventilação (`param ventilacao 0`, +6 °C) ou `--spike-chance` (picos aleatórios).
-- **Umidade do solo:** sem `--base`/`--noise`, cada `--id` ganha média e variabilidade próprias (estáveis entre execuções), para "talhão mais seco" e "maior variação" terem resposta clara.
-- **Comando inválido** (intervalo fora de 0,1–3600 s, parâmetro desconhecido ou fora da faixa) → gRPC `INVALID_ARGUMENT`; limiar numa fonte sem limiar → `FAILED_PRECONDITION`.
-
-### Gateway: `gateway/commands.py` (#13)
-
-`CommandService.execute(source_id, Command.xxx(...))` encontra a fonte no registro, chama a RPC com deadline de 2 s e devolve o `SourceStatus` novo (que também vai para `registry.update_status`). Erros são `CommandError(kind, message)`:
+`CommandService.execute(source_id, Command.xxx(...))` procura a fonte no registro, chama a RPC com deadline de 2 s e devolve o `SourceStatus` novo, que também vai para `registry.update_status`. Os erros chegam como `CommandError(kind, message)`, com a mensagem pronta para o Cliente:
 
 | `kind` | Quando | Efeito no registro |
 |---|---|---|
 | `FONTE_DESCONHECIDA` | id não está no registro | — |
 | `NAO_CONTROLAVEL` | fonte contínua | — |
-| `REJEITADO` | a fonte recusou (argumento inválido) | continua ONLINE |
+| `REJEITADO` | a fonte recusou (`INVALID_ARGUMENT`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`, `UNIMPLEMENTED`) | continua como estava |
 | `INDISPONIVEL` | sem resposta no deadline / conexão recusada | `mark_offline` |
 
-Ao descobrir uma fonte controlável nova, o Gateway faz um `GetStatus` em segundo plano para sincronizar o estado. Comandos ficam no histórico (`storage.record_event`).
+- Um canal gRPC por fonte, reaproveitado; se a fonte reaparecer em outro IP/porta, o canal é trocado.
+- Ao descobrir uma fonte controlável nova, o Gateway faz um `GetStatus` em segundo plano (fora da thread UDP) para sincronizar o estado.
+- `SimulateFailure(CRASH)` bem-sucedido marca a fonte OFFLINE na hora.
+- Cada comando vai para o histórico (`storage.record_event(source_id, "comando", ...)`).
 
-### Simulação de falhas (#8) — roteiro da demo
-
-Com tudo no ar (`./scripts/run_all.sh`; logs em `logs/gateway.log`):
-
-| Passo | Comando | O que aparece no Gateway |
-|---|---|---|
-| 1. Evento imediato | `./scripts/simulate_failure.sh event` | `ALARME de estufa-1` |
-| 2. Fonte silenciosa | `./scripts/simulate_failure.sh silent 30` | `valvula-1: ONLINE → OFFLINE` após 3 × intervalo; volta a `ONLINE` sozinha no fim dos 30 s |
-| 3. Valores absurdos | `./scripts/simulate_failure.sh garbage 30` | leituras da válvula com `-9999` |
-| 4. Queda de uma fonte contínua | `./scripts/simulate_failure.sh kill umidade-talhao-2` | `umidade-talhao-2: ONLINE → OFFLINE`; as outras fontes seguem normais |
-| 5. Queda do processo da válvula | `./scripts/simulate_failure.sh crash` | `valvula-1: ONLINE → OFFLINE` |
-| 6. Recuperação | `./scripts/simulate_failure.sh restart` | `valvula-1: OFFLINE → ONLINE` na próxima redescoberta |
-| 7. Limpar | `./scripts/simulate_failure.sh recover` | limiar da estufa volta a 30 |
-
-O script fala direto com o gRPC das fontes (`python -m gateway.commands`), sem passar pelo Gateway; quando o Cliente (#17) estiver pronto, os mesmos comandos podem ser enviados por ele. Fonte em falha `silent` também deixa de responder à redescoberta, senão o Gateway nunca a marcaria OFFLINE.
+Para testar uma fonte sem Gateway: `python -m gateway.commands <ip:porta> status | on | off | interval <s> | threshold <v> | param <nome> <v> | fail <none|silent|out_of_range|crash> [s]`.
 
 ## Contrato das fontes — `proto/sources.proto`
 
@@ -204,15 +173,8 @@ gateway/main.py           liga todos os módulos                         Marcelo
 sources/udp_sender.py     UdpSender + PeriodicPublisher                 Enzo
 sources/generator.py      gerador de valores simulados                  Enzo
 sources/simulated.py      fonte contínua genérica (testes/demo)         Enzo
-sources/control.py        base das controláveis + servidor gRPC          Jon
-sources/valve.py          válvula de irrigação (controlável)             Jon
-sources/greenhouse.py     estufa: limiar + evento imediato               Jon
-sources/continuous.py     base das fontes contínuas                      Jon
-sources/soil_moisture.py  umidade do solo (contínua)                     Jon
-sources/weather_station.py estação meteorológica (contínua)              Jon
 gateway/commands.py       cliente gRPC + handler de comandos             Jon
 scripts/                  gen_proto.sh, run_all.sh, stop_all.sh         Marcelo
-                          simulate_failure.sh                           Jon
 tests/                    pytest
 ```
 

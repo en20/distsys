@@ -32,10 +32,3 @@ class FailingDatagramSocket:
 
     def sendto(self, data: bytes, address: Address, /) -> int:
         raise OSError("Network is unreachable")
-
-
-class ClosableFakeSocket(FakeDatagramSocket):
-    """FakeDatagramSocket que também aceita close(), como os sockets que as fontes fecham no stop()."""
-
-    def close(self) -> None:
-        self.closed = True

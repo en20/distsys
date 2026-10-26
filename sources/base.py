@@ -62,10 +62,6 @@ class SourceProcess:
     def on_gateway_discovered(self, gateway: Address) -> None:
         """Chamado quando o Gateway é descoberto ou muda de endereço."""
 
-    def answers_discovery(self) -> bool:
-        """False faz a fonte ignorar DiscoveryRequest (ex.: falha simulada em silêncio, #8)."""
-        return True
-
     # ----- API para subclasses ------------------------------------------------
 
     def gateway_address(self) -> Address | None:
@@ -114,8 +110,7 @@ class SourceProcess:
 
     def _receive_discovery(self) -> None:
         payload = self._listener_sock.recv(RECV_BUFFER_BYTES)
-        if self.answers_discovery():
-            self._responder.handle_datagram(payload)
+        self._responder.handle_datagram(payload)
 
 
 def main() -> None:
