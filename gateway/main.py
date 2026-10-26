@@ -1,6 +1,6 @@
 """Ponto de entrada do Gateway (#27): liga descoberta, registro, UDP e detecção de falhas.
 
-    python -m gateway.main [--udp-port 6000] [--rediscovery 10] [--advertise-ip 192.168.0.5]
+    python -m gateway.main [--udp-port 6000] [--tcp-port 7000] [--rediscovery 10] [--advertise-ip 192.168.0.5]
 
 Pontos de encaixe dos outros fluxos (injetados aqui, sem import global nos módulos):
     - receptor/armazenamento de leituras (Enzo, #12) → substitui RegistryReadingSink em on_reading
@@ -26,8 +26,10 @@ from common.net import (
     resolve_local_ip,
 )
 from common.runtime import configure_logging, wait_for_shutdown_signal
+from gateway.client_dispatcher import ClientRequestDispatcher
 from gateway.discovery import AnnouncementHandler, DiscoveryBroadcaster
 from gateway.registry import SourceRegistry
+from gateway.tcp_server import DEFAULT_CLIENT_TCP_PORT, ClientTcpServer
 from gateway.udp_endpoint import GatewayUdpEndpoint
 from pb import sources_pb2
 
@@ -68,6 +70,7 @@ class Gateway:
         advertise: Address,
         rediscovery_s: float,
         registry: SourceRegistry | None = None,
+        client_server: ClientTcpServer | None = None,
     ) -> None:
         self.sock = sock
         self.registry = registry or SourceRegistry()
@@ -79,14 +82,19 @@ class Gateway:
             on_announcement=AnnouncementHandler(self.registry),
             on_reading=RegistryReadingSink(self.registry, self.rediscovery.trigger),
         )
+        self.client_server = client_server
 
     def start(self) -> None:
         # UDP primeiro: os anúncios podem chegar logo após o primeiro DiscoveryRequest.
         self.udp.start()
         self.failure_monitor.start()
         self.rediscovery.start()
+        if self.client_server:
+            self.client_server.start()
 
     def stop(self) -> None:
+        if self.client_server:
+            self.client_server.stop()
         self.rediscovery.stop()
         self.failure_monitor.stop()
         self.udp.stop()
@@ -96,6 +104,7 @@ class Gateway:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Gateway do sistema de monitoramento")
     parser.add_argument("--udp-port", type=int, default=DEFAULT_GATEWAY_UDP_PORT, help="porta UDP (anúncios e leituras)")
+    parser.add_argument("--tcp-port", type=int, default=DEFAULT_CLIENT_TCP_PORT, help="porta TCP dos Clientes")
     parser.add_argument("--mcast-group", default=os.environ.get("DISTSYS_MCAST_GROUP", DEFAULT_MCAST_GROUP))
     parser.add_argument("--mcast-port", type=int, default=int(os.environ.get("DISTSYS_MCAST_PORT", DEFAULT_MCAST_PORT)))
     parser.add_argument("--mcast-if", default=os.environ.get("DISTSYS_MCAST_IF"), help="IP da interface multicast")
@@ -113,7 +122,11 @@ def build_gateway(args: argparse.Namespace) -> Gateway:
     advertise_ip = args.advertise_ip or args.mcast_if or resolve_local_ip(args.mcast_group)
     advertise = (advertise_ip, sock.getsockname()[1])
     log.info("Gateway em %s:%d (UDP), descoberta em %s:%d", *advertise, args.mcast_group, args.mcast_port)
-    return Gateway(sock, (args.mcast_group, args.mcast_port), advertise, args.rediscovery)
+    registry = SourceRegistry()
+    # commands/queries/storage entram aqui quando os fluxos do Jon (#13) e do Enzo (#14, #16) existirem;
+    # enquanto isso o servidor responde à listagem e devolve ERROR_UNSUPPORTED nos outros pedidos.
+    client_server = ClientTcpServer(ClientRequestDispatcher(registry), port=args.tcp_port)
+    return Gateway(sock, (args.mcast_group, args.mcast_port), advertise, args.rediscovery, registry, client_server)
 
 
 def main() -> None:
