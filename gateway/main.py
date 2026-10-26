@@ -5,7 +5,8 @@
 Pontos de encaixe dos outros fluxos (injetados aqui, sem import global nos módulos):
     - receptor/armazenamento de leituras (Enzo, #12) → ReadingReceiver em on_reading (usa o RegistryReadingSink)
     - consultas (Enzo, #14) → gateway.queries; persistência (Enzo, #16) → gateway.storage
-    - cliente gRPC de comandos (Jon, #13) → on_controllable_discovered do AnnouncementHandler
+    - cliente gRPC de comandos (Jon, #13) → gateway.commands (CommandService), GetStatus inicial
+      ligado ao on_controllable_discovered do AnnouncementHandler
     - servidor TCP do Cliente (LG, #15)
 """
 
@@ -26,6 +27,7 @@ from common.net import (
     resolve_local_ip,
 )
 from common.runtime import configure_logging, epoch_ms, wait_for_shutdown_signal
+from gateway.commands import CommandService
 from gateway.discovery import AnnouncementHandler, DiscoveryBroadcaster
 from gateway.queries import QueryEngine
 from gateway.readings import DEFAULT_RETENTION_S, ReadingReceiver, ReadingStore
@@ -86,9 +88,10 @@ class Gateway:
             self.store, RegistryReadingSink(self.registry, self.rediscovery.trigger), storage
         )
         self.queries = QueryEngine(self.store, history=storage)
+        self.commands = CommandService(self.registry, storage=storage)
         self.udp = GatewayUdpEndpoint(
             sock,
-            on_announcement=AnnouncementHandler(self.registry),
+            on_announcement=AnnouncementHandler(self.registry, self.commands.sync_status_async),
             on_reading=self.receiver,
         )
 
@@ -107,6 +110,7 @@ class Gateway:
         self.rediscovery.stop()
         self.failure_monitor.stop()
         self.udp.stop()
+        self.commands.close()
         if self.storage is not None:
             self.storage.stop()
         self.sock.close()
