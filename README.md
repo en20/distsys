@@ -2,12 +2,24 @@
 
 Sistema distribuído de monitoramento e controle (Distribuição de Processos e Dados — Prof. Paulo A. L. Rego). Especificação em [`docs/especificacao-trabalho-1.pdf`](docs/especificacao-trabalho-1.pdf); acompanhamento na issue #1.
 
-> **Domínio de aplicação:** agricultura de precisão (fontes do Enzo; falta registrar no kickoff, #2). O contrato das fontes usa o tipo como string, então não depende dessa escolha.
+> **Domínio de aplicação:** agricultura de precisão (registrado no kickoff, #2): válvulas de irrigação, reservatório, umidade do solo dos talhões e estação meteorológica. O contrato das fontes usa o tipo como string, então não depende dessa escolha.
+
+## Início rápido
+
+```bash
+docker compose up --build
+```
+
+Abra o dashboard em **http://localhost:8080**:
+
+![Dashboard Fazenda Conectada: indicadores do campo, cartões das fontes, gráfico do reservatório em alarme e comandos](docs/dashboard.png)
+
+O dashboard mostra o campo em tempo real, os comandos para as fontes, as consultas e os alarmes. Para usar o CLI: `docker compose run --rm cli`. Detalhes em [Como rodar](#como-rodar), inclusive como rodar sem Docker.
 
 ## Arquitetura
 
 ```
-Cliente (Node.js) ──TCP (protobuf)── Gateway (Python)
+Cliente (Node.js: CLI e dashboard web) ──TCP (protobuf)── Gateway (Python)
                                       │  ▲
                      gRPC (comandos)  │  │ UDP (fluxo de dados, protobuf)
                                       ▼  │
@@ -306,5 +318,5 @@ Pontos de encaixe para os outros fluxos:
 |---|---|
 | Marcelo | contratos, descoberta, registro, infraestrutura |
 | Enzo | fluxo de dados (UDP), consultas, persistência, slides |
-| Jon | fontes e controle (gRPC) |
+| Jon | fontes e controle (gRPC), integração final, dashboard "Fazenda Conectada" e Docker |
 | LG | Cliente e protocolo TCP (Node.js) |

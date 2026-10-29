@@ -527,7 +527,7 @@ function drawChart(source) {
       parsing: false,
       interaction: { mode: 'nearest', axis: 'x', intersect: false },
       scales: {
-        x: { type: 'linear', grid: { color: grid }, ticks: { color: ticks, callback: (value) => new Date(value).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }), maxTicksLimit: 6 } },
+        x: { type: 'linear', grid: { color: grid }, ticks: { color: ticks, callback: axisTime, maxTicksLimit: 6 } },
         y: { grid: { color: grid }, ticks: { color: ticks } },
       },
       plugins: {
@@ -547,6 +547,13 @@ function withGaps(points, intervalS) {
     out.push(p);
   });
   return out;
+}
+
+/** Rótulo do eixo do tempo: com menos de 10 min de dados, mostra os segundos para os rótulos não se repetirem. */
+function axisTime(value) {
+  const { min, max } = this.chart.scales.x;
+  const seconds = max - min < 10 * 60 * 1000 ? { second: '2-digit' } : {};
+  return new Date(value).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', ...seconds });
 }
 
 function destroyChart() {
