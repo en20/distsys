@@ -3,98 +3,183 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dashboard do Gateway</title>
+  <title>Fazenda Conectada</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%232f7d4f' d='M5 21c0-9 5-15 15-17-1 10-6 15-13 15'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <h1>Gestão de Ambiente Inteligente</h1>
-    <div id="connection" class="badge" role="status">conectando…</div>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21c0-9 5-15 15-17-1 10-6 15-13 15" /><path d="M5 21c3-5 6-8 10-10" /></svg>
+      <div>
+        <h1>Fazenda Conectada</h1>
+        <p>Agricultura de precisão · Gestão de Ambiente Inteligente</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span id="updated" class="muted small"></span>
+      <span id="connection" class="pill" role="status"><span class="dot"></span><span class="pill-text">conectando…</span></span>
+      <button id="theme-toggle" class="icon-button" type="button" aria-label="Alternar tema claro/escuro" title="Alternar tema">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z" /></svg>
+      </button>
+    </div>
   </header>
 
   <main>
-    <section id="sources-section">
-      <h2>Fontes <small id="updated"></small></h2>
-      <div class="table-wrap">
-        <table id="sources">
-          <thead>
-            <tr>
-              <th>ID</th><th>Tipo</th><th>Estado</th><th>Ligada</th><th>Controlável</th>
-              <th>Último valor</th><th>Intervalo</th><th>Limiar</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <p id="sources-empty" class="muted" hidden>Nenhuma fonte descoberta ainda.</p>
+    <section class="kpis" aria-label="Indicadores">
+      <article class="kpi" id="kpi-online">
+        <span class="kpi-label">Fontes online</span>
+        <strong class="kpi-value">—</strong>
+        <span class="kpi-sub"></span>
+      </article>
+      <article class="kpi" id="kpi-soil">
+        <span class="kpi-label">Umidade média do solo</span>
+        <strong class="kpi-value">—</strong>
+        <span class="kpi-sub"></span>
+      </article>
+      <article class="kpi" id="kpi-reservoir">
+        <span class="kpi-label">Reservatório</span>
+        <strong class="kpi-value">—</strong>
+        <span class="kpi-sub"></span>
+      </article>
+      <article class="kpi" id="kpi-flow">
+        <span class="kpi-label">Vazão de irrigação</span>
+        <strong class="kpi-value">—</strong>
+        <span class="kpi-sub"></span>
+      </article>
+      <article class="kpi" id="kpi-weather">
+        <span class="kpi-label">Clima</span>
+        <strong class="kpi-value">—</strong>
+        <span class="kpi-sub"></span>
+      </article>
     </section>
 
-    <section id="chart-section">
-      <h2>Série temporal <small id="chart-title">selecione uma fonte</small></h2>
-      <label class="inline">Grandeza <select id="metric"></select></label>
-      <div class="chart-box"><canvas id="chart"></canvas></div>
-      <p id="chart-note" class="muted"></p>
-    </section>
-
-    <section id="command-section">
-      <h2>Comandos <small id="command-title">selecione uma fonte controlável</small></h2>
-      <div id="commands" hidden>
-        <div class="row">
-          <span class="label">Energia</span>
-          <button type="button" data-power="true">Ligar</button>
-          <button type="button" data-power="false">Desligar</button>
+    <div class="layout">
+      <section class="panel field" aria-labelledby="field-title">
+        <div class="panel-head">
+          <h2 id="field-title">Campo</h2>
+          <span class="muted small">clique numa fonte para ver o gráfico e os comandos</span>
         </div>
-        <form class="row" data-form="interval">
-          <label class="label" for="f-interval">Intervalo (s)</label>
-          <input id="f-interval" name="intervalS" type="number" step="any" min="0" required>
-          <button>Aplicar</button>
-        </form>
-        <form class="row" data-form="threshold">
-          <label class="label" for="f-threshold">Limiar</label>
-          <input id="f-threshold" name="threshold" type="number" step="any" required>
-          <button>Aplicar</button>
-        </form>
-        <form class="row" data-form="parameter">
-          <label class="label" for="f-param-name">Parâmetro</label>
-          <input id="f-param-name" name="name" list="param-names" placeholder="nome" required>
-          <datalist id="param-names"></datalist>
-          <input name="value" type="number" step="any" placeholder="valor" aria-label="valor do parâmetro" required>
-          <button>Aplicar</button>
-        </form>
-        <form class="row" data-form="failure">
-          <label class="label" for="f-failure">Falha</label>
-          <select id="f-failure" name="mode">
-            <option value="FAILURE_SILENT">silenciosa</option>
-            <option value="FAILURE_OUT_OF_RANGE">fora da faixa</option>
-            <option value="FAILURE_CRASH">queda do processo</option>
-            <option value="FAILURE_NONE">remover falha</option>
-          </select>
-          <input name="durationS" type="number" step="1" min="0" value="0" aria-label="duração em segundos">
-          <button>Simular</button>
-        </form>
-      </div>
-      <p id="command-result" role="status"></p>
-    </section>
+        <div id="groups"></div>
+        <div id="empty" class="empty" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M5 12a7 7 0 0 1 14 0M2 12a10 10 0 0 1 20 0" /></svg>
+          <p>Nenhuma fonte descoberta ainda.</p>
+          <p class="muted small">O Gateway procura fontes por multicast a cada poucos segundos. Suba as fontes com <code>./scripts/run_all.sh</code>.</p>
+        </div>
+      </section>
 
-    <section id="events-section">
-      <h2>Eventos e alarmes</h2>
-      <ul id="events" class="events"></ul>
-      <p id="events-empty" class="muted">Nenhum evento registrado desde que a página abriu.</p>
-    </section>
+      <aside class="panel detail" id="detail" aria-live="polite">
+        <div id="detail-empty" class="empty">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18" /><path d="M7 15l4-4 3 3 5-6" /></svg>
+          <p>Selecione uma fonte</p>
+          <p class="muted small">Você verá a série temporal e, se ela for controlável, os comandos disponíveis.</p>
+        </div>
+        <div id="detail-body" hidden>
+          <div class="detail-head">
+            <span id="detail-icon" class="type-icon"></span>
+            <div>
+              <h2 id="detail-title"></h2>
+              <p id="detail-sub" class="muted small"></p>
+            </div>
+            <span id="detail-state" class="chip"></span>
+          </div>
+          <div id="detail-alert" class="alert" hidden></div>
 
-    <section id="query-section">
-      <h2>Consultas agregadas</h2>
-      <form id="query-form" class="row wrap">
-        <label>Consulta <select name="queryType" id="query-type"></select></label>
-        <label>Fonte <input name="sourceId" placeholder="todas"></label>
-        <label>Tipo <input name="sourceType" placeholder="todos"></label>
-        <label>Grandeza <input name="metric" placeholder="todas"></label>
-        <label>Janela (s) <input name="windowS" type="number" min="0" step="1" placeholder="tudo"></label>
-        <button>Consultar</button>
-      </form>
-      <div id="query-result"></div>
-    </section>
+          <div class="metric-tabs" id="metric-tabs" role="tablist" aria-label="Grandeza do gráfico"></div>
+          <div class="chart-box"><canvas id="chart" aria-label="Série temporal da grandeza selecionada"></canvas></div>
+          <p id="chart-note" class="muted small"></p>
+
+          <div id="controls" hidden>
+            <h3>Comandos</h3>
+            <div class="control">
+              <div>
+                <span class="control-label">Energia</span>
+                <span class="muted small" id="power-hint"></span>
+              </div>
+              <button id="power" class="switch" type="button" role="switch" aria-checked="false" aria-label="Ligar ou desligar a fonte"><span></span></button>
+            </div>
+
+            <form class="control" data-form="interval">
+              <label class="control-label" for="f-interval">Intervalo de envio</label>
+              <div class="inline">
+                <div class="chips" id="interval-presets">
+                  <button type="button" class="chip-button" data-interval="2">2 s</button>
+                  <button type="button" class="chip-button" data-interval="5">5 s</button>
+                  <button type="button" class="chip-button" data-interval="15">15 s</button>
+                </div>
+                <input id="f-interval" name="intervalS" type="number" step="any" min="0" required aria-label="intervalo em segundos">
+                <button class="button">Aplicar</button>
+              </div>
+            </form>
+
+            <form class="control" data-form="threshold" id="threshold-control">
+              <label class="control-label" for="f-threshold">Limiar de alerta <output id="threshold-out"></output></label>
+              <div class="inline">
+                <input id="f-threshold-range" type="range" min="0" max="100" step="1" aria-label="limiar (deslizante)">
+                <input id="f-threshold" name="threshold" type="number" step="any" required>
+                <button class="button">Aplicar</button>
+              </div>
+            </form>
+
+            <div id="parameters"></div>
+
+            <form class="control" data-form="failure">
+              <span class="control-label">Simular falha</span>
+              <div class="failure-buttons">
+                <button type="button" class="button ghost" data-failure="FAILURE_SILENT" title="Para de enviar leituras e de responder à descoberta">Silenciosa</button>
+                <button type="button" class="button ghost" data-failure="FAILURE_OUT_OF_RANGE" title="Envia valores fisicamente impossíveis">Fora da faixa</button>
+                <button type="button" class="button danger" data-failure="FAILURE_CRASH" title="Encerra o processo da fonte">Derrubar</button>
+                <button type="button" class="button ghost" data-failure="FAILURE_NONE">Normalizar</button>
+              </div>
+              <label class="muted small">duração <input name="durationS" type="number" step="1" min="0" value="20" aria-label="duração em segundos"> s (0 = até normalizar)</label>
+            </form>
+          </div>
+          <p id="readonly-note" class="note" hidden>Sensor contínuo: só envia leituras, não aceita comandos.</p>
+        </div>
+      </aside>
+    </div>
+
+    <div class="layout bottom">
+      <section class="panel" aria-labelledby="queries-title">
+        <div class="panel-head">
+          <h2 id="queries-title">Consultas</h2>
+          <label class="muted small">janela
+            <select id="query-window">
+              <option value="600">10 min</option>
+              <option value="3600" selected>1 hora</option>
+              <option value="86400">24 horas</option>
+              <option value="0">todo o histórico</option>
+            </select>
+          </label>
+        </div>
+        <div class="quick-queries" id="quick-queries"></div>
+
+        <details class="advanced">
+          <summary>Consulta personalizada</summary>
+          <form id="query-form" class="query-form">
+            <label>Consulta <select name="queryType" id="query-type"></select></label>
+            <label>Fonte <input name="sourceId" placeholder="todas"></label>
+            <label>Tipo <input name="sourceType" placeholder="todos"></label>
+            <label>Grandeza <input name="metric" placeholder="todas"></label>
+            <label>Janela (s) <input name="windowS" type="number" min="0" step="1" placeholder="tudo"></label>
+            <button class="button">Consultar</button>
+          </form>
+          <div id="query-result"></div>
+        </details>
+      </section>
+
+      <section class="panel" aria-labelledby="events-title">
+        <div class="panel-head">
+          <h2 id="events-title">Linha do tempo</h2>
+          <span class="muted small">desde que a página abriu</span>
+        </div>
+        <ul id="events" class="timeline"></ul>
+        <p id="events-empty" class="muted small">Nenhum evento ainda. Alarmes, mudanças de estado e comandos aparecem aqui.</p>
+      </section>
+    </div>
   </main>
+
+  <div id="toasts" class="toasts" aria-live="assertive"></div>
 
   <script src="/vendor/chart.umd.js"></script>
   <script src="series.js"></script>

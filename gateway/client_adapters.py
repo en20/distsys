@@ -95,9 +95,10 @@ class ClientHistory:
 
 
 def _to_proto(reading: StoredReading) -> sources_pb2.SensorReading:
-    # received_ms (relógio do Gateway) é o mesmo eixo usado no filtro from_ms/to_ms.
+    # Mesmo timestamp da listagem (SourceInfo.last_reading_ms, horário da fonte): o dashboard junta as duas
+    # séries e descarta pontos repetidos pelo timestamp. O filtro from_ms/to_ms continua no relógio do Gateway.
     proto = sources_pb2.SensorReading(source_id=reading.source_id, type=reading.source_type,
-                                      timestamp_ms=reading.received_ms, is_event=reading.is_event)
+                                      timestamp_ms=reading.source_timestamp_ms, is_event=reading.is_event)
     proto.measurements.extend(sources_pb2.Measurement(metric=m.metric, value=m.value, unit=m.unit)
                               for m in reading.measurements)
     return proto

@@ -2,12 +2,24 @@
 
 Sistema distribuído de monitoramento e controle (Distribuição de Processos e Dados — Prof. Paulo A. L. Rego). Especificação em [`docs/especificacao-trabalho-1.pdf`](docs/especificacao-trabalho-1.pdf); acompanhamento na issue #1.
 
-> **Domínio de aplicação:** agricultura de precisão (fontes do Enzo; falta registrar no kickoff, #2). O contrato das fontes usa o tipo como string, então não depende dessa escolha.
+> **Domínio de aplicação:** agricultura de precisão (registrado no kickoff, #2): válvulas de irrigação, reservatório, umidade do solo dos talhões e estação meteorológica. O contrato das fontes usa o tipo como string, então não depende dessa escolha.
+
+## Início rápido
+
+```bash
+docker compose up --build
+```
+
+Abra o dashboard em **http://localhost:8080**:
+
+![Dashboard Fazenda Conectada: indicadores do campo, cartões das fontes, gráfico do reservatório em alarme e comandos](docs/dashboard.png)
+
+O dashboard mostra o campo em tempo real, os comandos para as fontes, as consultas e os alarmes. Para usar o CLI: `docker compose run --rm cli`. Detalhes em [Como rodar](#como-rodar), inclusive como rodar sem Docker.
 
 ## Arquitetura
 
 ```
-Cliente (Node.js) ──TCP (protobuf)── Gateway (Python)
+Cliente (Node.js: CLI e dashboard web) ──TCP (protobuf)── Gateway (Python)
                                       │  ▲
                      gRPC (comandos)  │  │ UDP (fluxo de dados, protobuf)
                                       ▼  │
@@ -26,11 +38,27 @@ Cliente (Node.js) ──TCP (protobuf)── Gateway (Python)
 
 ## Como rodar
 
+### Com Docker (recomendado — só precisa do Docker)
+
+```bash
+docker compose up --build        # Gateway + 7 fontes + dashboard, cada um no seu container
+```
+
+- **Dashboard:** http://localhost:8080
+- **CLI:** `docker compose run --rm cli`
+- **Logs:** `docker compose logs -f gateway` (ou o nome de uma fonte, ex.: `valvula-1`)
+- **Comando direto numa fonte:** `docker compose exec gateway python -m gateway.commands valvula-1:50051 status`
+- **Parar:** `docker compose down`. O histórico SQLite fica no volume `gateway-data`; `docker compose down -v` apaga.
+
+Cada fonte é um container separado na mesma rede do Docker. A descoberta multicast, as leituras UDP e os comandos gRPC passam por essa rede, com um IP por fonte, como em máquinas diferentes. Uma fonte derrubada pela falha "queda do processo" fica parada até `docker compose start <fonte>`. As portas 7000 e 8080 só são publicadas em `127.0.0.1`, porque o Gateway e o dashboard não têm autenticação.
+
+### Sem Docker
+
 Requisitos: Python 3.11+ e Node.js 20+.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
-./scripts/gen_proto.sh          # gera pb/sources_pb2*.py a partir de proto/
+./scripts/gen_proto.sh          # gera pb/*_pb2*.py a partir de proto/ (Windows: PYTHON=.venv/Scripts/python ./scripts/gen_proto.sh)
 ./scripts/run_all.sh            # sobe Gateway + fontes, logs em logs/*.log
 tail -f logs/*.log
 ./scripts/stop_all.sh
@@ -226,6 +254,15 @@ client/cli/                menu interativo (listar, ligar/desligar, frequência,
 client/web/                Express (porta 8080) + página com Chart.js; fala HTTP com o navegador e TCP com o Gateway
 ```
 
+O dashboard ("Fazenda Conectada") mostra:
+- **Indicadores:** fontes online, umidade média do solo, nível do reservatório, vazão de irrigação e clima.
+- **Cartões por tipo de fonte:** mini-curva das últimas leituras e barra de nível (no reservatório, com a marca do limiar). Destacam falha, alarme e OFFLINE.
+- **Painel da fonte selecionada:** gráfico com a linha do limiar e os alarmes em vermelho, e os comandos (liga/desliga, intervalo, limiar, parâmetros e simulação de falha).
+- **Consultas do domínio:** talhão mais seco, água irrigada, alarmes e temperatura média, além de uma consulta personalizada.
+- **Linha do tempo:** alarmes, mudanças de estado e comandos.
+
+Tem tema claro e escuro e funciona no celular. Para abrir direto numa fonte: `http://localhost:8080/#fonte=reservatorio-1`.
+
 Se o Gateway estiver fora do ar, o CLI avisa e tenta reconectar a cada ação (leituras são repetidas até 3 vezes; comandos **não** são reenviados automaticamente para não serem aplicados duas vezes). O dashboard escuta só em `127.0.0.1` por padrão porque não tem autenticação; use `--bind 0.0.0.0` para abrir à rede.
 
 ## Estrutura e interfaces entre os módulos
@@ -259,6 +296,7 @@ gateway/tcp_server.py     servidor TCP, uma thread por cliente          LG
 client/                   CLI e dashboard (Node.js)                     LG
 scripts/                  gen_proto.sh, run_all.sh, stop_all.sh         Marcelo
                           simulate_failure.sh                           Jon
+Dockerfile, client/Dockerfile, docker-compose.yml   sistema completo em containers   Jon
 tests/                    pytest (client/test/: node --test)
 ```
 
@@ -280,5 +318,5 @@ Pontos de encaixe para os outros fluxos:
 |---|---|
 | Marcelo | contratos, descoberta, registro, infraestrutura |
 | Enzo | fluxo de dados (UDP), consultas, persistência, slides |
-| Jon | fontes e controle (gRPC) |
+| Jon | fontes e controle (gRPC), integração final, dashboard "Fazenda Conectada" e Docker |
 | LG | Cliente e protocolo TCP (Node.js) |
