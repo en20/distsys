@@ -1,6 +1,5 @@
 """Descoberta de ponta a ponta com sockets reais na loopback (multicast via 127.0.0.1)."""
 
-import random
 import time
 
 import pytest
@@ -10,6 +9,7 @@ from gateway.main import Gateway
 from gateway.registry import SourceRegistry, SourceState
 from sources.base import SourceProcess
 from sources.config import SourceConfig
+from tests.conftest import random_udp_port
 
 LOOPBACK = "127.0.0.1"
 
@@ -25,7 +25,7 @@ def wait_until(condition, timeout_s: float = 3.0) -> bool:
 
 @pytest.fixture
 def mcast_port() -> int:
-    return random.randint(20_000, 30_000)  # isola de outras execuções e da porta real 5007
+    return random_udp_port(20_000, 30_000)  # isola de outras execuções e da porta real 5007
 
 
 def start_gateway(mcast_port: int, registry: SourceRegistry | None = None) -> Gateway:

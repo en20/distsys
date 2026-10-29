@@ -16,6 +16,7 @@ from pb import sources_pb2
 from sources.config import SourceConfig
 from sources.generator import ValueGenerator
 from sources.simulated import SimulatedSource
+from tests.conftest import random_udp_port
 
 LOOPBACK = "127.0.0.1"
 
@@ -31,7 +32,7 @@ def wait_until(condition, timeout_s: float = 5.0) -> bool:
 
 @pytest.fixture
 def mcast_port() -> int:
-    return random.randint(30_001, 40_000)  # isola de outras execuções e da porta real 5007
+    return random_udp_port(30_001, 40_000)  # isola de outras execuções e da porta real 5007
 
 
 def start_gateway(mcast_port: int, db_path: Path | None = None) -> Gateway:
