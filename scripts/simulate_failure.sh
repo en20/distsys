@@ -11,6 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PYTHON="${PYTHON:-.venv/bin/python}"
+[ -x "$PYTHON" ] || [ ! -x .venv/Scripts/python ] || PYTHON=.venv/Scripts/python  # venv no Windows
 [ -x "$PYTHON" ] || PYTHON=python3
 export DISTSYS_MCAST_IF="${DISTSYS_MCAST_IF:-127.0.0.1}"
 VALVE=127.0.0.1:50051

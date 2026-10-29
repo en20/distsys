@@ -1,13 +1,15 @@
 """Ponto de entrada do Gateway (#27): liga descoberta, registro, UDP e detecção de falhas.
 
-    python -m gateway.main [--udp-port 6000] [--rediscovery 10] [--advertise-ip 192.168.0.5] [--db data/gateway.db]
+    python -m gateway.main [--udp-port 6000] [--tcp-port 7000] [--rediscovery 10] [--advertise-ip 192.168.0.5]
+                           [--db data/gateway.db]
 
 Pontos de encaixe dos outros fluxos (injetados aqui, sem import global nos módulos):
     - receptor/armazenamento de leituras (Enzo, #12) → ReadingReceiver em on_reading (usa o RegistryReadingSink)
     - consultas (Enzo, #14) → gateway.queries; persistência (Enzo, #16) → gateway.storage
     - cliente gRPC de comandos (Jon, #13) → gateway.commands (CommandService), GetStatus inicial
       ligado ao on_controllable_discovered do AnnouncementHandler
-    - servidor TCP do Cliente (LG, #15)
+    - servidor TCP do Cliente (LG, #15) → gateway.client_server, com os módulos acima adaptados ao
+      contrato do Cliente por gateway.client_adapters
 """
 
 import argparse
@@ -27,12 +29,15 @@ from common.net import (
     resolve_local_ip,
 )
 from common.runtime import configure_logging, epoch_ms, wait_for_shutdown_signal
+from gateway.client_adapters import ClientCommands, ClientHistory, ClientQueries
+from gateway.client_dispatcher import ClientRequestDispatcher
 from gateway.commands import CommandService
 from gateway.discovery import AnnouncementHandler, DiscoveryBroadcaster
 from gateway.queries import QueryEngine
 from gateway.readings import DEFAULT_RETENTION_S, ReadingReceiver, ReadingStore
 from gateway.registry import SourceRegistry
 from gateway.storage import SqliteStorage
+from gateway.tcp_server import DEFAULT_CLIENT_TCP_PORT, ClientTcpServer
 from gateway.udp_endpoint import GatewayUdpEndpoint
 from pb import sources_pb2
 
@@ -76,6 +81,7 @@ class Gateway:
         registry: SourceRegistry | None = None,
         store: ReadingStore | None = None,
         storage: SqliteStorage | None = None,
+        client_port: int | None = None,
     ) -> None:
         self.sock = sock
         self.registry = registry or SourceRegistry()
@@ -94,6 +100,16 @@ class Gateway:
             on_announcement=AnnouncementHandler(self.registry, self.commands.sync_status_async),
             on_reading=self.receiver,
         )
+        # Servidor TCP dos Clientes (LG, #15); None = sem Clientes (testes que só exercitam as fontes).
+        self.client_server = None
+        if client_port is not None:
+            dispatcher = ClientRequestDispatcher(
+                self.registry,
+                commands=ClientCommands(self.commands),
+                queries=ClientQueries(self.queries),
+                storage=ClientHistory(storage) if storage is not None else None,
+            )
+            self.client_server = ClientTcpServer(dispatcher, port=client_port)
 
     def start(self) -> None:
         if self.storage is not None:
@@ -105,8 +121,12 @@ class Gateway:
         self.udp.start()
         self.failure_monitor.start()
         self.rediscovery.start()
+        if self.client_server:
+            self.client_server.start()
 
     def stop(self) -> None:
+        if self.client_server:
+            self.client_server.stop()
         self.rediscovery.stop()
         self.failure_monitor.stop()
         self.udp.stop()
@@ -119,6 +139,7 @@ class Gateway:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Gateway do sistema de monitoramento")
     parser.add_argument("--udp-port", type=int, default=DEFAULT_GATEWAY_UDP_PORT, help="porta UDP (anúncios e leituras)")
+    parser.add_argument("--tcp-port", type=int, default=DEFAULT_CLIENT_TCP_PORT, help="porta TCP dos Clientes")
     parser.add_argument("--mcast-group", default=os.environ.get("DISTSYS_MCAST_GROUP", DEFAULT_MCAST_GROUP))
     parser.add_argument("--mcast-port", type=int, default=int(os.environ.get("DISTSYS_MCAST_PORT", DEFAULT_MCAST_PORT)))
     parser.add_argument("--mcast-if", default=os.environ.get("DISTSYS_MCAST_IF"), help="IP da interface multicast")
@@ -144,7 +165,8 @@ def build_gateway(args: argparse.Namespace) -> Gateway:
     log.info("Gateway em %s:%d (UDP), descoberta em %s:%d", *advertise, args.mcast_group, args.mcast_port)
     store = ReadingStore(retention_s=args.retention_h * 3600)
     storage = SqliteStorage(args.db) if args.db else None
-    return Gateway(sock, (args.mcast_group, args.mcast_port), advertise, args.rediscovery, store=store, storage=storage)
+    return Gateway(sock, (args.mcast_group, args.mcast_port), advertise, args.rediscovery, store=store, storage=storage,
+                   client_port=args.tcp_port)
 
 
 def main() -> None:

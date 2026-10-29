@@ -50,7 +50,15 @@ Componentes individuais:
 .venv/bin/python -m gateway.commands 127.0.0.1:50051 status                 # comando gRPC direto numa fonte controlável
 ```
 
-Testes: `.venv/bin/python -m pytest`
+Cliente (Node.js, requer o Gateway no ar):
+
+```bash
+cd client && npm install        # uma vez
+node cli/index.js               # CLI interativo; --host / --port (padrão localhost:7000)
+node web/server.js              # dashboard em http://127.0.0.1:8080 (extra); --gateway-host / --gateway-port / --port / --bind
+```
+
+Testes: `.venv/bin/python -m pytest` (Python) e `cd client && npm test` (Node). O teste `tests/test_node_python_interop.py` roda um cliente Node real contra o servidor TCP Python e é pulado se o `npm install` não tiver sido feito.
 
 ### Multicast e firewall
 
@@ -192,6 +200,34 @@ Serviço gRPC `SourceControl` (fontes controláveis) — toda RPC devolve o `Sou
 | `SetParameter` | `ParameterRequest { name, value }` |
 | `SimulateFailure` | `FailureRequest { mode, duration_s }` — `FAILURE_SILENT`, `FAILURE_OUT_OF_RANGE`, `FAILURE_CRASH` |
 
+## Contrato do Cliente — `proto/client.proto` e framing TCP
+
+O Cliente (Node.js) fala com o Gateway por **TCP** (porta `7000`). Cada mensagem vai com framing: **4 bytes big-endian com o tamanho** do payload + bytes protobuf (`gateway/framing.py`, `client/framing.js`). O Cliente envia `ClientRequest`; o Gateway responde sempre com um `GatewayResponse` com o mesmo `request_id`. Erros viram `ErrorResponse` e a conexão continua aberta. O arquivo não importa `sources.proto`: o Gateway converte os tipos.
+
+| Pedido (`ClientRequest`) | Resposta (`GatewayResponse`) | Requisito |
+|---|---|---|
+| `ListSourcesRequest` | `ListSourcesResponse { sources[] }` — `SourceInfo`: `source_id`, `type`, `ip`, `grpc_port`, `controllable`, `state` (ONLINE/OFFLINE/POWERED_OFF), `last_seen_ms`, `powered_on`, `send_interval_s`, `threshold` (opcional), `parameters`, `failure`, `last_values[]` | 3a.ii, 3b.i |
+| `CommandRequest { source_id, oneof { power, interval, threshold, parameter, failure } }` | `CommandResponse { success, message, source }` — estado atualizado da fonte | 3a.iii, 3b.ii |
+| `QueryRequest { query_type, source_id, source_type, metric, window_s }` | `QueryResponse { value, samples, details[] }` | 3b.iii, 5d |
+| `HistoryRequest { source_id, from_ms, to_ms, metric }` (extra, #16) | `HistoryResponse { points[] }` | extra |
+| qualquer um | `ErrorResponse { code, message }` — `INVALID_REQUEST`, `NOT_FOUND`, `NOT_CONTROLLABLE`, `SOURCE_UNAVAILABLE`, `UNSUPPORTED`, `INTERNAL` | — |
+
+`query_type` é uma string (e não um enum) para não depender das consultas escolhidas no kickoff; os nomes oferecidos pelo CLI e pelo dashboard ficam em `client/query-presets.js`.
+
+Servidor (`gateway/tcp_server.py`): uma thread por conexão, vários clientes simultâneos; um cliente que cai no meio de uma mensagem só encerra a própria conexão. O despacho (`gateway/client_dispatcher.py`) valida o pedido (fonte existe e é controlável, intervalo > 0, números finitos) antes de chamar os módulos dos outros fluxos (comandos, consultas e histórico, via `gateway/client_adapters.py`). Módulo ausente responde `ERROR_UNSUPPORTED` — ex.: histórico com `--db ""`.
+
+## Cliente CLI e dashboard (Node.js)
+
+```
+client/framing.js          framing TCP (4 bytes + payload)
+client/protocol.js         carrega proto/client.proto (protobufjs)
+client/gateway-client.js   conexão, request_id, erros tipados — compartilhado por CLI e dashboard
+client/cli/                menu interativo (listar, ligar/desligar, frequência, limiar, parâmetro, falha, consultas, histórico)
+client/web/                Express (porta 8080) + página com Chart.js; fala HTTP com o navegador e TCP com o Gateway
+```
+
+Se o Gateway estiver fora do ar, o CLI avisa e tenta reconectar a cada ação (leituras são repetidas até 3 vezes; comandos **não** são reenviados automaticamente para não serem aplicados duas vezes). O dashboard escuta só em `127.0.0.1` por padrão porque não tem autenticação; use `--bind 0.0.0.0` para abrir à rede.
+
 ## Estrutura e interfaces entre os módulos
 
 ```
@@ -215,9 +251,15 @@ sources/control.py        servidor gRPC SourceControl                   Enzo (ad
 sources/cli.py            linha de comando das fontes                   Enzo (adaptado por Jon)
 sources/valve.py, reservoir.py, soil_moisture.py, weather_station.py   Enzo
 gateway/commands.py       cliente gRPC + handler de comandos             Jon
+proto/client.proto        contrato Cliente ↔ Gateway                    LG
+gateway/framing.py        framing TCP (4 bytes + protobuf)              LG
+gateway/client_dispatcher.py  ClientRequest → módulos injetados         LG
+gateway/client_adapters.py    contrato do Cliente ↔ comandos/consultas/histórico   integração
+gateway/tcp_server.py     servidor TCP, uma thread por cliente          LG
+client/                   CLI e dashboard (Node.js)                     LG
 scripts/                  gen_proto.sh, run_all.sh, stop_all.sh         Marcelo
                           simulate_failure.sh                           Jon
-tests/                    pytest
+tests/                    pytest (client/test/: node --test)
 ```
 
 Pontos de encaixe para os outros fluxos:
@@ -230,6 +272,7 @@ Pontos de encaixe para os outros fluxos:
 | Comandos/estado (Jon #13, Marcelo #11) | `gateway.storage.record_event(source_id, "comando", "SetPower(off)")` — opcional, aparece no histórico |
 | Comandos (LG, #15) | `gateway.commands.execute(source_id, Command.power(False))` → `SourceStatus`; erro = `CommandError` (`kind`, `message`). Construtores: `status()`, `power(on)`, `interval(s)`, `threshold(v)`, `parameter(nome, v)`, `failure(modo, s)`; `Command.parse(["interval", "5"])` aceita texto |
 | Servidor TCP (LG, #15) | `registry.list()` / `registry.get()` — devolvem cópias, seguras para ler fora do lock |
+| Cliente TCP ↔ módulos | já ligado em `gateway/main.py`: `gateway/client_adapters.py` converte `CommandRequest` → `Command` (e `CommandError` → `ErrorResponse`), os filtros/janela da `QueryRequest` para o `QueryEngine` (`window_s` 0 = 30 dias) e as leituras do SQLite para `HistoryPoint` |
 
 ## Equipe
 

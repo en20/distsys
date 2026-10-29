@@ -9,6 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PYTHON="${PYTHON:-.venv/bin/python}"
+[ -x "$PYTHON" ] || [ ! -x .venv/Scripts/python ] || PYTHON=.venv/Scripts/python  # venv no Windows
 export DISTSYS_MCAST_IF="${DISTSYS_MCAST_IF:-127.0.0.1}"
 mkdir -p logs
 : > logs/pids
@@ -33,4 +34,5 @@ start umidade-2 sources.soil_moisture --id umidade-2 --interval 5
 start umidade-3 sources.soil_moisture --id umidade-3 --interval 5
 start estacao-1 sources.weather_station --id estacao-1 --interval 5
 
+echo "Cliente: cd client && node cli/index.js   |   dashboard: node web/server.js (http://127.0.0.1:8080)"
 echo "Acompanhe com: tail -f logs/*.log   |   Pare com: ./scripts/stop_all.sh"

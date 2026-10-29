@@ -127,7 +127,7 @@ def test_simulated_source_builds_readings_from_the_generator() -> None:
 
 
 def gateway_args(*argv: str) -> argparse.Namespace:
-    return build_arg_parser().parse_args(["--udp-port", "0", *argv])
+    return build_arg_parser().parse_args(["--udp-port", "0", "--tcp-port", "0", *argv])
 
 
 def test_main_wires_persistence_from_arguments(tmp_path: Path) -> None:
