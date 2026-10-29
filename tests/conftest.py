@@ -20,9 +20,25 @@ def free_tcp_port() -> int:
         return probe.getsockname()[1]
 
 
+def random_udp_port(low: int, high: int) -> int:
+    """Porta UDP sorteada em [low, high] que de fato abre.
+
+    No Windows, o Hyper-V (ex.: Docker Desktop) reserva faixas de portas; abrir uma delas dá WinError 10013.
+    """
+    for _ in range(100):
+        port = random.randint(low, high)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            try:
+                probe.bind(("", port))
+            except OSError:
+                continue
+        return port
+    raise RuntimeError(f"nenhuma porta UDP livre entre {low} e {high}")
+
+
 @pytest.fixture
 def mcast_port() -> int:
-    return random.randint(50_001, 60_000)  # porta exclusiva por teste: fontes de testes diferentes não se enxergam
+    return random_udp_port(50_001, 60_000)  # porta exclusiva por teste: fontes de testes diferentes não se enxergam
 
 
 @pytest.fixture

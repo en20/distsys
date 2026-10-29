@@ -1,6 +1,5 @@
 """Handler de comandos do Gateway (#13) contra um servidor gRPC SourceControl falso na loopback."""
 
-import random
 import socket
 import time
 from concurrent import futures
@@ -17,6 +16,7 @@ from pb import sources_pb2, sources_pb2_grpc
 from sources.base import SourceProcess
 from sources.config import SourceConfig
 from tests.builders import make_announcement
+from tests.conftest import random_udp_port
 
 LOOPBACK = "127.0.0.1"
 
@@ -214,7 +214,7 @@ def test_describe_status() -> None:
 # ----- integração com o Gateway: descoberta → GetStatus inicial → comando ---------------------
 
 def test_gateway_syncs_a_discovered_controllable_source(fake_source) -> None:
-    mcast_port = random.randint(40_001, 50_000)
+    mcast_port = random_udp_port(40_001, 50_000)
     sock = open_udp_socket(0)
     configure_multicast_sender(sock, ttl=1, interface_ip=LOOPBACK)
     gateway = Gateway(sock, ("224.1.1.1", mcast_port), (LOOPBACK, sock.getsockname()[1]), rediscovery_s=5.0,
