@@ -1,0 +1,68 @@
+# Sistema completo com um comando:  docker compose up --build
+#   dashboard: http://localhost:8080   ·   Gateway (TCP dos Clientes): localhost:7000
+#   CLI:       docker compose run --rm cli
+#
+# Cada fonte é um container (processo) separado, na mesma rede: a descoberta multicast (224.1.1.1:5007),
+# as leituras UDP (6000) e os comandos gRPC passam pela rede do Docker, como entre máquinas diferentes.
+# Uma fonte derrubada pela falha simulada (crash) fica parada até: docker compose start <fonte>
+
+# Só o gateway e o dashboard constroem as imagens; os outros serviços as reaproveitam.
+x-python: &python
+  image: distsys-python
+  pull_policy: never
+  restart: "no"
+
+services:
+  gateway:
+    <<: *python
+    build: .
+    command: python -m gateway.main --db /data/gateway.db
+    ports:
+      - "127.0.0.1:7000:7000"  # só na própria máquina: o Gateway não tem autenticação
+    volumes:
+      - gateway-data:/data
+
+  valvula-1:
+    <<: *python
+    command: python -m sources.valve --id valvula-1 --grpc-port 50051 --interval 5
+  valvula-2:
+    <<: *python
+    command: python -m sources.valve --id valvula-2 --grpc-port 50053 --interval 5
+  reservatorio-1:
+    <<: *python
+    command: python -m sources.reservoir --id reservatorio-1 --grpc-port 50052 --interval 5
+  umidade-1:
+    <<: *python
+    command: python -m sources.soil_moisture --id umidade-1 --interval 5
+  umidade-2:
+    <<: *python
+    command: python -m sources.soil_moisture --id umidade-2 --interval 5
+  umidade-3:
+    <<: *python
+    command: python -m sources.soil_moisture --id umidade-3 --interval 5
+  estacao-1:
+    <<: *python
+    command: python -m sources.weather_station --id estacao-1 --interval 5
+
+  dashboard:
+    image: distsys-client
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    depends_on:
+      - gateway
+    ports:
+      - "127.0.0.1:8080:8080"  # o dashboard não tem autenticação
+
+  cli:
+    image: distsys-client
+    pull_policy: never
+    profiles: ["cli"]  # não sobe no "up"; use: docker compose run --rm cli
+    command: node cli/index.js --host gateway
+    stdin_open: true
+    tty: true
+    depends_on:
+      - gateway
+
+volumes:
+  gateway-data:
