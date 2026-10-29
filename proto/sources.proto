@@ -1,0 +1,121 @@
+// Contrato entre o Gateway e as fontes de dados (issue #3).
+//
+// Três canais usam estas mensagens:
+//   1. Descoberta  — UDP multicast: Gateway envia DiscoveryRequest; cada fonte
+//      responde por UDP unicast com SourceMessage{announcement}.
+//   2. Fluxo de dados — UDP unicast: fontes enviam SourceMessage{reading}
+//      para a mesma porta UDP do Gateway.
+//   3. Controle — gRPC: Gateway chama o serviço SourceControl das fontes
+//      controláveis; toda RPC devolve o estado atualizado da fonte.
+//
+// O tipo da fonte é string (e não enum) para o contrato não depender do
+// domínio escolhido no kickoff (#2).
+
+syntax = "proto3";
+
+package distsys.sources;
+
+// ---------------------------------------------------------------------------
+// Estado operacional (compartilhado por descoberta e gRPC)
+// ---------------------------------------------------------------------------
+
+enum FailureMode {
+  FAILURE_NONE = 0;          // operando normalmente
+  FAILURE_SILENT = 1;        // para de enviar leituras por um tempo
+  FAILURE_OUT_OF_RANGE = 2;  // envia valores fora da faixa física
+  FAILURE_CRASH = 3;         // encerra o processo
+}
+
+message SourceStatus {
+  string source_id = 1;
+  bool powered_on = 2;
+  double send_interval_s = 3;
+  optional double threshold = 4;        // ausente em fontes sem limiar
+  map<string, double> parameters = 5;   // parâmetros do domínio (vazão, setpoint...)
+  FailureMode failure = 6;
+  int64 failure_until_ms = 7;           // epoch ms; 0 = sem prazo
+}
+
+// ---------------------------------------------------------------------------
+// Descoberta (UDP multicast) — requisitos 1b.iv, 2b, 4a, 4b
+// ---------------------------------------------------------------------------
+
+message DiscoveryRequest {
+  string gateway_ip = 1;          // para onde as fontes respondem e enviam dados
+  uint32 gateway_udp_port = 2;
+  uint64 request_id = 3;
+  int64 timestamp_ms = 4;
+}
+
+message SourceAnnouncement {
+  string source_id = 1;
+  string type = 2;                // ex.: "VALVULA_IRRIGACAO", "SENSOR_UMIDADE"
+  string ip = 3;
+  uint32 grpc_port = 4;           // 0 quando a fonte não é controlável
+  bool controllable = 5;
+  SourceStatus initial_state = 6; // requisito 2b.iii
+  uint64 request_id = 7;          // eco do DiscoveryRequest respondido
+}
+
+// ---------------------------------------------------------------------------
+// Fluxo de dados (UDP unicast) — requisito 1b.iii
+// ---------------------------------------------------------------------------
+
+message Measurement {
+  string metric = 1;              // ex.: "temperatura", "umidade"
+  double value = 2;
+  string unit = 3;                // ex.: "°C", "%"
+}
+
+message SensorReading {
+  string source_id = 1;
+  string type = 2;
+  int64 timestamp_ms = 3;
+  repeated Measurement measurements = 4;  // uma ou mais grandezas por leitura
+  bool is_event = 5;              // true = envio imediato por limiar (req. 5c)
+}
+
+// Tudo que chega na porta UDP do Gateway vem neste envelope.
+message SourceMessage {
+  oneof payload {
+    SourceAnnouncement announcement = 1;
+    SensorReading reading = 2;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Controle (gRPC) — requisitos 1b.ii, 2a.i, 2c
+// ---------------------------------------------------------------------------
+
+message Empty {}
+
+message PowerRequest {
+  bool on = 1;
+}
+
+message IntervalRequest {
+  double interval_s = 1;
+}
+
+message ThresholdRequest {
+  double threshold = 1;
+}
+
+message ParameterRequest {
+  string name = 1;
+  double value = 2;
+}
+
+message FailureRequest {
+  FailureMode mode = 1;
+  uint32 duration_s = 2;          // 0 = até novo comando (ignorado em CRASH)
+}
+
+service SourceControl {
+  rpc GetStatus(Empty) returns (SourceStatus);
+  rpc SetPower(PowerRequest) returns (SourceStatus);
+  rpc SetSendInterval(IntervalRequest) returns (SourceStatus);
+  rpc SetThreshold(ThresholdRequest) returns (SourceStatus);
+  rpc SetParameter(ParameterRequest) returns (SourceStatus);
+  rpc SimulateFailure(FailureRequest) returns (SourceStatus);
+}

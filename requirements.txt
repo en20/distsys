@@ -1,0 +1,4 @@
+grpcio>=1.66
+grpcio-tools>=1.66
+protobuf>=5.27
+pytest>=8.0

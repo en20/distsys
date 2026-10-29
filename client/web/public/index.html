@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard do Gateway</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Gestão de Ambiente Inteligente</h1>
+    <div id="connection" class="badge" role="status">conectando…</div>
+  </header>
+
+  <main>
+    <section id="sources-section">
+      <h2>Fontes <small id="updated"></small></h2>
+      <div class="table-wrap">
+        <table id="sources">
+          <thead>
+            <tr>
+              <th>ID</th><th>Tipo</th><th>Estado</th><th>Ligada</th><th>Controlável</th>
+              <th>Último valor</th><th>Intervalo</th><th>Limiar</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="sources-empty" class="muted" hidden>Nenhuma fonte descoberta ainda.</p>
+    </section>
+
+    <section id="chart-section">
+      <h2>Série temporal <small id="chart-title">selecione uma fonte</small></h2>
+      <label class="inline">Grandeza <select id="metric"></select></label>
+      <div class="chart-box"><canvas id="chart"></canvas></div>
+      <p id="chart-note" class="muted"></p>
+    </section>
+
+    <section id="command-section">
+      <h2>Comandos <small id="command-title">selecione uma fonte controlável</small></h2>
+      <div id="commands" hidden>
+        <div class="row">
+          <span class="label">Energia</span>
+          <button type="button" data-power="true">Ligar</button>
+          <button type="button" data-power="false">Desligar</button>
+        </div>
+        <form class="row" data-form="interval">
+          <label class="label" for="f-interval">Intervalo (s)</label>
+          <input id="f-interval" name="intervalS" type="number" step="any" min="0" required>
+          <button>Aplicar</button>
+        </form>
+        <form class="row" data-form="threshold">
+          <label class="label" for="f-threshold">Limiar</label>
+          <input id="f-threshold" name="threshold" type="number" step="any" required>
+          <button>Aplicar</button>
+        </form>
+        <form class="row" data-form="parameter">
+          <label class="label" for="f-param-name">Parâmetro</label>
+          <input id="f-param-name" name="name" list="param-names" placeholder="nome" required>
+          <datalist id="param-names"></datalist>
+          <input name="value" type="number" step="any" placeholder="valor" aria-label="valor do parâmetro" required>
+          <button>Aplicar</button>
+        </form>
+        <form class="row" data-form="failure">
+          <label class="label" for="f-failure">Falha</label>
+          <select id="f-failure" name="mode">
+            <option value="FAILURE_SILENT">silenciosa</option>
+            <option value="FAILURE_OUT_OF_RANGE">fora da faixa</option>
+            <option value="FAILURE_CRASH">queda do processo</option>
+            <option value="FAILURE_NONE">remover falha</option>
+          </select>
+          <input name="durationS" type="number" step="1" min="0" value="0" aria-label="duração em segundos">
+          <button>Simular</button>
+        </form>
+      </div>
+      <p id="command-result" role="status"></p>
+    </section>
+
+    <section id="events-section">
+      <h2>Eventos e alarmes</h2>
+      <ul id="events" class="events"></ul>
+      <p id="events-empty" class="muted">Nenhum evento registrado desde que a página abriu.</p>
+    </section>
+
+    <section id="query-section">
+      <h2>Consultas agregadas</h2>
+      <form id="query-form" class="row wrap">
+        <label>Consulta <select name="queryType" id="query-type"></select></label>
+        <label>Fonte <input name="sourceId" placeholder="todas"></label>
+        <label>Tipo <input name="sourceType" placeholder="todos"></label>
+        <label>Grandeza <input name="metric" placeholder="todas"></label>
+        <label>Janela (s) <input name="windowS" type="number" min="0" step="1" placeholder="tudo"></label>
+        <button>Consultar</button>
+      </form>
+      <div id="query-result"></div>
+    </section>
+  </main>
+
+  <script src="/vendor/chart.umd.js"></script>
+  <script src="series.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,210 @@
+// Contrato entre o Cliente (Node.js) e o Gateway (Python) sobre TCP (issue #9).
+//
+// Cada mensagem trafega com framing: 4 bytes big-endian com o tamanho do
+// payload + bytes protobuf (gateway/framing.py e client/framing.js).
+// O Cliente envia ClientRequest; o Gateway responde sempre com um
+// GatewayResponse, que repete o request_id do pedido. Falhas viram
+// ErrorResponse (a conexão continua aberta).
+//
+// O arquivo é independente de sources.proto de propósito: o Cliente não precisa
+// conhecer o contrato interno Gateway ↔ fontes. O Gateway converte os tipos.
+
+syntax = "proto3";
+
+package distsys.client;
+
+// ---------------------------------------------------------------------------
+// Tipos compartilhados
+// ---------------------------------------------------------------------------
+
+enum SourceState {
+  SOURCE_STATE_UNSPECIFIED = 0;
+  SOURCE_ONLINE = 1;       // anúncio ou leitura recebidos recentemente
+  SOURCE_OFFLINE = 2;      // silenciosa por tempo demais ou gRPC indisponível
+  SOURCE_POWERED_OFF = 3;  // desligada por comando (powered_on = false)
+}
+
+enum FailureMode {
+  FAILURE_NONE = 0;
+  FAILURE_SILENT = 1;        // para de enviar leituras por um tempo
+  FAILURE_OUT_OF_RANGE = 2;  // envia valores fora da faixa física
+  FAILURE_CRASH = 3;         // encerra o processo
+}
+
+message Measurement {
+  string metric = 1;         // ex.: "temperatura"
+  double value = 2;
+  string unit = 3;           // ex.: "°C"
+}
+
+// Uma fonte como o Gateway a enxerga — requisitos 3a.ii e 3b.i.
+message SourceInfo {
+  string source_id = 1;
+  string type = 2;
+  string ip = 3;
+  uint32 grpc_port = 4;      // 0 = não controlável
+  bool controllable = 5;
+  SourceState state = 6;
+  int64 last_seen_ms = 7;    // epoch ms do último sinal de vida
+
+  // Estado operacional reportado pela fonte.
+  bool powered_on = 8;
+  double send_interval_s = 9;
+  optional double threshold = 10;        // ausente em fontes sem limiar
+  map<string, double> parameters = 11;   // parâmetros do domínio (vazão, setpoint...)
+  FailureMode failure = 12;
+  int64 failure_until_ms = 13;           // 0 = sem prazo
+
+  // Última leitura recebida (vazio se ainda não chegou nenhuma).
+  repeated Measurement last_values = 14;
+  int64 last_reading_ms = 15;
+  bool last_reading_is_event = 16;
+}
+
+// ---------------------------------------------------------------------------
+// Listagem — requisitos 3a.ii, 3b.i
+// ---------------------------------------------------------------------------
+
+message ListSourcesRequest {}
+
+message ListSourcesResponse {
+  repeated SourceInfo sources = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Comandos — requisitos 3a.iii, 3b.ii
+// ---------------------------------------------------------------------------
+
+message PowerCommand {
+  bool on = 1;
+}
+
+message IntervalCommand {
+  double interval_s = 1;     // > 0
+}
+
+message ThresholdCommand {
+  double threshold = 1;
+}
+
+message ParameterCommand {
+  string name = 1;
+  double value = 2;
+}
+
+message FailureCommand {
+  FailureMode mode = 1;
+  uint32 duration_s = 2;     // 0 = até novo comando (ignorado em CRASH)
+}
+
+message CommandRequest {
+  string source_id = 1;
+  oneof command {
+    PowerCommand power = 2;
+    IntervalCommand interval = 3;
+    ThresholdCommand threshold = 4;
+    ParameterCommand parameter = 5;
+    FailureCommand failure = 6;
+  }
+}
+
+message CommandResponse {
+  bool success = 1;
+  string message = 2;        // texto legível para exibir ao usuário
+  SourceInfo source = 3;     // estado atualizado da fonte
+}
+
+// ---------------------------------------------------------------------------
+// Consultas agregadas — requisito 3b.iii
+// ---------------------------------------------------------------------------
+
+// `query_type` é string (e não enum) para não depender das consultas escolhidas
+// no kickoff (#2) e implementadas em #14; o Gateway recusa nomes desconhecidos.
+message QueryRequest {
+  string query_type = 1;     // ex.: "media", "maximo", "contagem_eventos"
+  string source_id = 2;      // vazio = qualquer fonte
+  string source_type = 3;    // vazio = qualquer tipo
+  string metric = 4;         // vazio = todas as grandezas
+  uint32 window_s = 5;       // janela de tempo até agora; 0 = todo o histórico
+}
+
+message SourceResult {
+  string source_id = 1;
+  string type = 2;
+  string metric = 3;
+  double value = 4;
+  uint32 samples = 5;        // quantas leituras entraram no cálculo
+}
+
+message QueryResponse {
+  string query_type = 1;
+  double value = 2;          // resultado agregado de todas as fontes filtradas
+  uint32 samples = 3;
+  repeated SourceResult details = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Histórico (extra, #16) — séries temporais para o dashboard
+// ---------------------------------------------------------------------------
+
+message HistoryRequest {
+  string source_id = 1;
+  int64 from_ms = 2;         // epoch ms; 0 = desde o início
+  int64 to_ms = 3;           // epoch ms; 0 = até agora
+  string metric = 4;         // vazio = todas as grandezas
+}
+
+message HistoryPoint {
+  int64 timestamp_ms = 1;
+  repeated Measurement measurements = 2;
+  bool is_event = 3;
+}
+
+message HistoryResponse {
+  string source_id = 1;
+  repeated HistoryPoint points = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Erros
+// ---------------------------------------------------------------------------
+
+enum ErrorCode {
+  ERROR_UNSPECIFIED = 0;
+  ERROR_INVALID_REQUEST = 1;     // mensagem vazia, valor inválido
+  ERROR_NOT_FOUND = 2;           // fonte inexistente
+  ERROR_NOT_CONTROLLABLE = 3;    // comando em fonte sem gRPC
+  ERROR_SOURCE_UNAVAILABLE = 4;  // fonte offline / gRPC falhou
+  ERROR_UNSUPPORTED = 5;         // consulta desconhecida ou módulo ausente
+  ERROR_INTERNAL = 6;
+}
+
+message ErrorResponse {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Envelopes
+// ---------------------------------------------------------------------------
+
+message ClientRequest {
+  uint64 request_id = 1;     // o Gateway devolve o mesmo valor na resposta
+  oneof request {
+    ListSourcesRequest list_sources = 2;
+    CommandRequest command = 3;
+    QueryRequest query = 4;
+    HistoryRequest history = 5;
+  }
+}
+
+message GatewayResponse {
+  uint64 request_id = 1;
+  oneof response {
+    ListSourcesResponse list_sources = 2;
+    CommandResponse command = 3;
+    QueryResponse query = 4;
+    HistoryResponse history = 5;
+    ErrorResponse error = 6;
+  }
+}
